@@ -1,4 +1,4 @@
-"""TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
+"""TypeSafe makes choices; Grok (xAI) writes field values for TYPE_TEXT."""
 
 import json
 import math
@@ -158,32 +158,28 @@ def field_context(goal, action, page, history):
 
 
 def field_text(context):
-    key = os.environ.get("TEXT_MODEL_API_KEY")
-    if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
-    reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
-    if os.environ.get("TEXT_MODEL_REASONING") == "none":
-        reasoning = {"reasoning": {"enabled": False}}
+    from .auth import resolve_text_bearer
+
+    key = resolve_text_bearer()
+    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.x.ai/v1").rstrip("/")
+    model = os.environ.get("TEXT_MODEL", "grok-4.3")
     started = time.perf_counter()
-    result = post_json(
-        base + "/chat/completions",
-        key,
-        {
-            "model": model,
-            "max_tokens": 1024,
-            "response_format": {"type": "json_object"},
-            **reasoning,
-            "messages": [
-                {"role": "system", "content": TEXT_VALUE},
-                {
-                    "role": "user",
-                    "content": json.dumps(context),
-                },
-            ],
-        },
-    )
+    body = {
+        "model": model,
+        "max_tokens": 1024,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": TEXT_VALUE},
+            {
+                "role": "user",
+                "content": json.dumps(context),
+            },
+        ],
+    }
+    reasoning = os.environ.get("TEXT_MODEL_REASONING", "none")
+    if reasoning:
+        body["reasoning_effort"] = reasoning
+    result = post_json(base + "/chat/completions", key, body)
     try:
         output = json.loads(result["choices"][0]["message"]["content"])
         value = output["text"]

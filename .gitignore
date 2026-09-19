@@ -8,3 +8,7 @@ artifacts/
 *.egg-info/
 
 dist/
+
+# Grok OAuth token store lives under ~/.config/jev-ultrafast/; never commit copies.
+.jev-ultrafast/
+credentials.json
