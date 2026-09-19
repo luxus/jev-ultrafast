@@ -79,8 +79,10 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history):
-    elements, targets, controls = action_space(state["actions"])
+def choose(state, goal, history, skip_ids=()):
+    skip = set(skip_ids)
+    actions = [a for a in state["actions"] if a["id"] not in skip] or state["actions"]
+    elements, targets, controls = action_space(actions)
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
         "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
@@ -118,14 +120,17 @@ def choose(state, goal, history):
     }
     started = time.perf_counter()
     result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
+    if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
+        raise ValueError("Invalid TypeSafe response; no action executed.")
+    answers = result["answers"]
+    operation_answer = validate_choice(answers.get("operation") or {}, operations)
     operation = operation_answer["choice"]
     target = None
     target_answer = None
     probabilities = {}
     if operation in targets:
         # Unused target heads cannot cause an action. Validate the head selected by the operation.
-        target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
+        target_answer = validate_choice(answers.get(operation.lower() + "_target") or {}, targets[operation])
         target = target_answer["choice"]
         choice = targets[operation][target]["id"]
         probabilities = {a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()}
@@ -141,8 +146,8 @@ def choose(state, goal, history):
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,
-        "raw_answers": result["answers"],
-        "model": result["model"],
+        "raw_answers": answers,
+        "model": result.get("model", ""),
         "usage": result.get("usage", {}),
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,

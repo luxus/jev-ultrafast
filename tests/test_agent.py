@@ -163,6 +163,9 @@ def runner():
     a.screenshots = False
     a.pending_text = None
     p = page()
+    a.skip_ids = []
+    a.stale_choice = None
+    a.stale_count = 0
     a.state = {
         "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),
         "page": p,
@@ -174,6 +177,7 @@ def runner():
         "started_at": time.perf_counter(),
         "record": False,
         "text_calls": [],
+        "block_reason": None,
     }
     return a
 
@@ -318,3 +322,163 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_empty_typesafe_answers_are_invalid(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", lambda *_args: {"model": "test", "answers": {}})
+    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+        model.choose(page(), "Find a book", [])
+    monkeypatch.setattr(model, "post_json", lambda *_args: {"model": "test"})
+    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+        model.choose(page(), "Find a book", [])
+
+
+def test_choose_omits_skipped_control_ids(monkeypatch):
+    captured = []
+
+    def post(_url, _key, body):
+        captured.append(body)
+        operations = body["questions"]["operation"]["criteria"]
+        return {
+            "model": "test",
+            "answers": {"operation": choice(operations, "WAIT")},
+        }
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", post)
+    d = model.choose(page(), "Find a book", [], skip_ids=["e3"])
+    assert d["choice"] == "wait"
+    labels = [e["label"] for e in captured[0]["state"]["elements"]]
+    assert "Go" not in labels
+    click_labels = [c["element"] for c in captured[0]["questions"]["click_target"]["criteria"].values()]
+    assert not any("Go" in label for label in click_labels)
+
+
+def test_tick_stale_act_reobserves_without_blocking(runner, monkeypatch):
+    monkeypatch.setattr(loop, "choose", lambda *a, **k: decision("e3"))
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    runner.state["browser"].act.side_effect = StalePage("Target changed or is covered. Observe again.")
+    snap = runner.command("tick")
+    assert snap["status"] == "ready"
+    assert runner.state["decision"] is None
+    assert runner.state["status"] != "blocked"
+    assert runner.stale_choice == "e3"
+    assert runner.stale_count == 1
+    assert runner.skip_ids == []
+    runner.state["browser"].observe.assert_called()
+
+
+def test_two_consecutive_stale_pages_wait_and_skip_control(runner, monkeypatch):
+    monkeypatch.setattr(loop, "choose", lambda *a, **k: decision("e3"))
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    runner.state["browser"].act.side_effect = StalePage("changed")
+    runner.command("tick")
+    assert runner.stale_count == 1
+    assert runner.skip_ids == []
+
+    acted = []
+
+    def act(action, _page, text=None):
+        acted.append(action["id"])
+        if action["id"] != "wait":
+            raise StalePage("changed")
+
+    runner.state["browser"].act.side_effect = act
+    snap = runner.command("tick")
+    assert acted == ["e3", "wait"]
+    assert runner.skip_ids == ["e3"]
+    assert snap["history"][-1]["kind"] == "wait"
+    assert snap["status"] == "ready"
+
+    seen = []
+
+    def choose_skip(page, goal, history, skip_ids=()):
+        seen.append(list(skip_ids))
+        return decision("wait")
+
+    monkeypatch.setattr(loop, "choose", choose_skip)
+    runner.state["browser"].act.side_effect = None
+    runner.command("tick")
+    assert seen == [["e3"]]
+    assert runner.skip_ids == []
+
+
+def test_stale_on_different_controls_does_not_skip(runner, monkeypatch):
+    choices = iter([decision("e3"), decision("e2")])
+    monkeypatch.setattr(loop, "choose", lambda *a, **k: next(choices))
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    runner.state["browser"].act.side_effect = StalePage("changed")
+    runner.command("tick")
+    runner.command("tick")
+    assert runner.stale_choice == "e2"
+    assert runner.stale_count == 1
+    assert runner.skip_ids == []
+
+
+def test_invalid_typesafe_retries_choose_once(runner, monkeypatch):
+    calls = {"n": 0}
+
+    def choose(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("Invalid TypeSafe response; no action executed.")
+        return decision("e3")
+
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    runner.command("predict")
+    assert calls["n"] == 2
+    assert runner.state["decision"]["choice"] == "e3"
+    assert runner.state["status"] == "predicted"
+    assert runner.state["browser"].observe.call_count == 1
+
+
+def test_invalid_typesafe_twice_blocks_with_reason(runner, monkeypatch):
+    monkeypatch.setattr(
+        loop,
+        "choose",
+        Mock(side_effect=ValueError("Invalid TypeSafe response; no action executed.")),
+    )
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    snap = runner.command("tick")
+    assert snap["status"] == "blocked"
+    assert snap["block_reason"] == "Invalid TypeSafe response after retry; no action executed."
+    assert loop.choose.call_count == 2
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["decisions"][-1]["choice"] == "BLOCKED"
+
+
+def test_collapsed_menu_click_reobserves_before_next_predict(runner, monkeypatch):
+    monkeypatch.setattr(loop.time, "sleep", lambda _seconds: None)
+    opener = {
+        "id": "e4",
+        "kind": "click",
+        "label": "Change ticket type. Round trip",
+        "role": "combobox",
+        "expanded": "false",
+        "node": 40,
+        "value": "Round trip",
+    }
+    p = page()
+    p["actions"].insert(-1, opener)
+    p["fingerprint"] = fingerprint(p)
+    runner.state["page"] = p
+    runner.state["browser"].observe.return_value = p
+    runner.state["decision"] = {
+        "choice": "e4",
+        "operation": "CLICK",
+        "target": "3",
+        "confidence": 1.0,
+        "probabilities": {"e4": 1.0},
+        "latency_ms": 10,
+        "usage": {},
+    }
+    runner.command("act", {"fingerprint": p["fingerprint"]})
+    assert runner.state["browser"].observe.call_count == 2
+    assert runner.state["history"][-1]["action"] == "Change ticket type. Round trip"

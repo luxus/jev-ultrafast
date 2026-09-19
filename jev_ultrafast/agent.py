@@ -8,6 +8,37 @@ from .browser import Browser, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
+TERMINAL = {"DONE", "BLOCKED"}
+COLLAPSED = {False, "false"}
+MENU_ROLES = {"combobox", "listbox", "button"}
+
+
+def opens_collapsed_menu(action):
+    return action["kind"] == "click" and action.get("expanded") in COLLAPSED and action.get("role") in MENU_ROLES
+
+
+def is_invalid_typesafe(error):
+    return isinstance(error, ValueError) and "Invalid TypeSafe" in str(error)
+
+
+def blocked_choice(reason):
+    return {
+        "choice": "BLOCKED",
+        "operation": "BLOCKED",
+        "target": None,
+        "confidence": 1.0,
+        "probabilities": {"BLOCKED": 1.0},
+        "operation_probabilities": {"BLOCKED": 1.0},
+        "target_probabilities": {},
+        "target_confidence": None,
+        "raw_answers": {},
+        "model": "",
+        "usage": {},
+        "latency_ms": 0,
+        "request": {},
+        "error": reason,
+    }
+
 
 class Agent:
     def __init__(self, url, goals, *, record_dir=None, screenshots=False):
@@ -16,6 +47,9 @@ class Agent:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
+        self.skip_ids = []
+        self.stale_choice = None
+        self.stale_count = 0
         self.browser = Browser(url)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
@@ -38,6 +72,7 @@ class Agent:
             elapsed_ms=0,
             started_at=None,
             record=bool(self.record_dir),
+            block_reason=None,
         )
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
@@ -49,32 +84,97 @@ class Agent:
             "elements": action_space(self.state["page"]["actions"])[0],
         }
 
+    def _observe(self):
+        return self.state["browser"].observe(screenshot=self.screenshots)
+
+    def _on_stale(self, chosen):
+        """Reobserve. After two consecutive StalePages on the same control, wait and skip it once."""
+        state = self.state
+        state["decision"] = None
+        state["status"] = "ready"
+        state["page"] = self._observe()
+        skippable = chosen not in {None, "wait", *TERMINAL}
+        if skippable and chosen == getattr(self, "stale_choice", None):
+            self.stale_count = getattr(self, "stale_count", 0) + 1
+        else:
+            self.stale_choice = chosen if skippable else None
+            self.stale_count = 1 if skippable else 0
+        if skippable and getattr(self, "stale_count", 0) >= 2:
+            self.skip_ids = [chosen]
+            self.stale_choice = None
+            self.stale_count = 0
+            wait = next((a for a in state["page"]["actions"] if a["kind"] == "wait"), None)
+            if wait:
+                state["decision"] = {
+                    "choice": wait["id"],
+                    "operation": "WAIT",
+                    "target": None,
+                    "confidence": 1.0,
+                    "probabilities": {wait["id"]: 1.0},
+                    "latency_ms": 0,
+                    "usage": {},
+                }
+                try:
+                    return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
+                except StalePage:
+                    state["decision"] = None
+                    state["status"] = "ready"
+                    state["page"] = self._observe()
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        return self.snapshot()
+
     def command(self, name, body=None):
         body = body or {}
         state = self.state
         if name == "tick":
+            chosen = None
             try:
                 self.command("predict", {})
+                if state["status"] in {"done", "blocked"}:
+                    return self.snapshot()
+                chosen = (state["decision"] or {}).get("choice")
                 return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
             except StalePage:
-                state["decision"] = None
-                state["status"] = "ready"
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
-                state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-                return self.snapshot()
+                return self._on_stale(chosen)
         elif name == "predict":
             if not state["browser"]:
                 raise ValueError("Start a demo first")
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
             if not state["browser"].fresh(state["page"]):
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                state["page"] = self._observe()
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            skip_ids = tuple(getattr(self, "skip_ids", ()) or ())
+            try:
+                state["decision"] = choose(state["page"], state["goal"], state["history"], skip_ids=skip_ids)
+            except ValueError as error:
+                if not is_invalid_typesafe(error):
+                    raise
+                state["page"] = self._observe()
+                try:
+                    state["decision"] = choose(state["page"], state["goal"], state["history"], skip_ids=skip_ids)
+                except ValueError as retry_error:
+                    if not is_invalid_typesafe(retry_error):
+                        raise
+                    reason = "Invalid TypeSafe response after retry; no action executed."
+                    state["decision"] = blocked_choice(reason)
+                    state["block_reason"] = reason
+                    state["decisions"].append(
+                        {
+                            **state["decision"],
+                            "fingerprint": state["page"]["fingerprint"],
+                            "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                        }
+                    )
+                    self.skip_ids = []
+                    state["status"] = "blocked"
+                    state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                    return self.snapshot()
+            self.skip_ids = []
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -90,11 +190,13 @@ class Agent:
             # Consume once, before any mutation or model call. A retry cannot double-click.
             state["decision"] = None
             selected = decision["choice"]
-            if selected in {"DONE", "BLOCKED"}:
+            if selected in TERMINAL:
                 if not state["browser"].fresh(page):
                     state["status"] = "ready"
                     raise StalePage("Page changed since the decision. Choose again.")
                 state["status"] = "done" if selected == "DONE" else "blocked"
+                if selected == "BLOCKED" and decision.get("error"):
+                    state["block_reason"] = decision["error"]
                 state["plan_index"] = int(selected == "DONE")
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
@@ -139,7 +241,10 @@ class Agent:
                     "elapsed_ms": state["elapsed_ms"],
                 }
             )
-            state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            state["page"] = self._observe()
+            if opens_collapsed_menu(action):
+                time.sleep(0.05)
+                state["page"] = self._observe()
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(
                 page_changed=state["page"]["fingerprint"] != page["fingerprint"],
@@ -150,6 +255,8 @@ class Agent:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )
+            self.stale_choice = None
+            self.stale_count = 0
             repeated = state["history"][-3:]
             state["status"] = (
                 "blocked"
