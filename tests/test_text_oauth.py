@@ -46,13 +46,13 @@ def test_field_text_uses_oauth_store_without_api_key(monkeypatch):
     monkeypatch.setattr(model.CLIENT, "post", fake_post)
     value, meta = model.field_text({"goal": 'Enter "Zurich"'})
     assert value == "Zurich"
-    assert meta["model"] == "grok-4.3"
+    assert meta["model"] == "grok-4.6"
     assert len(posts) == 1
     sent = posts[0]
     assert sent["url"] == "https://api.x.ai/v1/chat/completions"
     assert sent["headers"]["Authorization"] == "Bearer oauth-access"
     assert sent["json"]["response_format"] == {"type": "json_object"}
-    assert sent["json"]["model"] == "grok-4.3"
+    assert sent["json"]["model"] == "grok-4.6"
     assert sent["json"]["reasoning_effort"] == "none"
     assert sent["json"]["messages"][0]["content"] == TEXT_VALUE
     assert json.loads(sent["json"]["messages"][1]["content"])["goal"] == 'Enter "Zurich"'

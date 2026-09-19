@@ -162,7 +162,7 @@ def field_text(context):
 
     key = resolve_text_bearer()
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.x.ai/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "grok-4.3")
+    model = os.environ.get("TEXT_MODEL", "grok-4.6")
     started = time.perf_counter()
     body = {
         "model": model,

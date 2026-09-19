@@ -68,7 +68,7 @@ Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. T
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted. For a dedicated debugging port, set `BU_CDP_URL=http://127.0.0.1:9242` (HTTP DevTools endpoint, not a WebSocket URL).
 
-`TYPE_TEXT` calls xAI chat completions at `https://api.x.ai/v1`. The default model is `grok-4.3` (current cheap/fast chat model on [xAI docs](https://docs.x.ai/developers/models); `grok-4-fast` is documented as an alias). Sign in with `jev-ultrafast login` (device-code OAuth + PKCE for a Grok subscription). Tokens are stored under `~/.config/jev-ultrafast/` and are gitignored. `TEXT_MODEL_API_KEY` remains a CI/dev fallback, not the recommended path. TypeSafe stays on `TYPESAFE_API_KEY`.
+`TYPE_TEXT` calls xAI chat completions at `https://api.x.ai/v1`. The default model is `grok-4.6` (see [xAI docs](https://docs.x.ai/developers/models)). Sign in with `jev-ultrafast login` (device-code OAuth + PKCE for a Grok subscription). Tokens are stored under `~/.config/jev-ultrafast/` and are gitignored. `TEXT_MODEL_API_KEY` remains a CI/dev fallback, not the recommended path. TypeSafe stays on `TYPESAFE_API_KEY`.
 
 ## Use the library
 
