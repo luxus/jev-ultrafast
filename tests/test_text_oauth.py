@@ -53,11 +53,52 @@ def test_field_text_uses_oauth_store_without_api_key(monkeypatch):
     assert sent["headers"]["Authorization"] == "Bearer oauth-access"
     assert sent["json"]["response_format"] == {"type": "json_object"}
     assert sent["json"]["model"] == "grok-4.6"
-    assert sent["json"]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in sent["json"]
     assert sent["json"]["messages"][0]["content"] == TEXT_VALUE
     assert json.loads(sent["json"]["messages"][1]["content"])["goal"] == 'Enter "Zurich"'
     assert sent["json"] is not None
     assert sent["data"] is None
+
+
+def test_reasoning_effort_omits_none_for_grok_46_and_later():
+    assert model.reasoning_effort("grok-4.6", "none") is None
+    assert model.reasoning_effort("grok-4.6-fast", "none") is None
+    assert model.reasoning_effort("grok-5", "none") is None
+    assert model.reasoning_effort("xai/grok-4.6", "none") is None
+    assert model.reasoning_effort("grok-4.3", "none") == "none"
+    assert model.reasoning_effort("grok-4-fast", "none") == "none"
+    assert model.reasoning_effort("grok-4.6", "low") == "low"
+    assert model.reasoning_effort("grok-4.6", "") is None
+
+
+def test_field_text_sends_reasoning_none_for_grok_43(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL", "grok-4.3")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "ci-dev-key")
+    posts = []
+
+    def fake_post(url, json=None, **_kwargs):
+        posts.append(json)
+        return FakeResponse(chat_payload())
+
+    monkeypatch.setattr(model.CLIENT, "post", fake_post)
+    model.field_text({"goal": "Zurich"})
+    assert posts[0]["model"] == "grok-4.3"
+    assert posts[0]["reasoning_effort"] == "none"
+
+
+def test_field_text_sends_explicit_reasoning_for_grok_46(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_REASONING", "low")
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "ci-dev-key")
+    posts = []
+
+    def fake_post(url, json=None, **_kwargs):
+        posts.append(json)
+        return FakeResponse(chat_payload())
+
+    monkeypatch.setattr(model.CLIENT, "post", fake_post)
+    model.field_text({"goal": "Zurich"})
+    assert posts[0]["model"] == "grok-4.6"
+    assert posts[0]["reasoning_effort"] == "low"
 
 
 def test_field_text_falls_back_to_env_key_without_store(monkeypatch):

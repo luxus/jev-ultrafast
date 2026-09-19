@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import time
 
 import httpx
@@ -157,6 +158,18 @@ def field_context(goal, action, page, history):
     }
 
 
+def reasoning_effort(model, requested):
+    """Map TEXT_MODEL_REASONING to a request field. grok-4.6+ reject `none`; omit it."""
+    if not requested:
+        return None
+    if requested == "none":
+        name = model.rsplit("/", 1)[-1]
+        match = re.fullmatch(r"grok-(\d+)(?:\.(\d+))?(?:-.*)?", name)
+        if match and (int(match.group(1)), int(match.group(2) or 0)) >= (4, 6):
+            return None
+    return requested
+
+
 def field_text(context):
     from .auth import resolve_text_bearer
 
@@ -176,9 +189,9 @@ def field_text(context):
             },
         ],
     }
-    reasoning = os.environ.get("TEXT_MODEL_REASONING", "none")
-    if reasoning:
-        body["reasoning_effort"] = reasoning
+    effort = reasoning_effort(model, os.environ.get("TEXT_MODEL_REASONING", "none"))
+    if effort:
+        body["reasoning_effort"] = effort
     result = post_json(base + "/chat/completions", key, body)
     try:
         output = json.loads(result["choices"][0]["message"]["content"])
