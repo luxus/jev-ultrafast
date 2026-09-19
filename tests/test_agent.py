@@ -455,7 +455,9 @@ def test_invalid_typesafe_twice_blocks_with_reason(runner, monkeypatch):
 
 
 def test_collapsed_menu_click_reobserves_before_next_predict(runner, monkeypatch):
-    monkeypatch.setattr(loop.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(loop.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(loop.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
     opener = {
         "id": "e4",
         "kind": "click",
@@ -465,11 +467,25 @@ def test_collapsed_menu_click_reobserves_before_next_predict(runner, monkeypatch
         "node": 40,
         "value": "Round trip",
     }
-    p = page()
-    p["actions"].insert(-1, opener)
-    p["fingerprint"] = fingerprint(p)
-    runner.state["page"] = p
-    runner.state["browser"].observe.return_value = p
+    closed = page()
+    closed["actions"].insert(-1, opener)
+    closed["fingerprint"] = fingerprint(closed)
+    flashing = page()
+    flashing["actions"] = [
+        {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560},
+        {"id": "wait", "kind": "wait", "label": "Wait for the page to update"},
+    ]
+    flashing["fingerprint"] = fingerprint(flashing)
+    opened = page()
+    opened["actions"] = [
+        {"id": "e1", "kind": "click", "label": "Round trip", "role": "option", "node": 41, "value": ""},
+        {"id": "e2", "kind": "click", "label": "One way", "role": "option", "node": 42, "value": ""},
+        {"id": "e3", "kind": "click", "label": "Multi-city", "role": "option", "node": 43, "value": ""},
+        {"id": "wait", "kind": "wait", "label": "Wait for the page to update"},
+    ]
+    opened["fingerprint"] = fingerprint(opened)
+    runner.state["page"] = closed
+    runner.state["browser"].observe.side_effect = [closed, flashing, opened]
     runner.state["decision"] = {
         "choice": "e4",
         "operation": "CLICK",
@@ -479,6 +495,13 @@ def test_collapsed_menu_click_reobserves_before_next_predict(runner, monkeypatch
         "latency_ms": 10,
         "usage": {},
     }
-    runner.command("act", {"fingerprint": p["fingerprint"]})
-    assert runner.state["browser"].observe.call_count == 2
+    runner.command("act", {"fingerprint": closed["fingerprint"]})
+    assert runner.state["browser"].observe.call_count == 3
+    assert clock["now"] == pytest.approx(0.1)
+    assert clock["now"] < loop.COLLAPSED_MENU_WAIT_S
+    assert [a["label"] for a in runner.state["page"]["actions"] if a.get("role") == "option"] == [
+        "Round trip",
+        "One way",
+        "Multi-city",
+    ]
     assert runner.state["history"][-1]["action"] == "Change ticket type. Round trip"

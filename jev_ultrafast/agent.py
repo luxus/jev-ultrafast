@@ -11,10 +11,29 @@ from .questions import MAX_STEPS
 TERMINAL = {"DONE", "BLOCKED"}
 COLLAPSED = {False, "false"}
 MENU_ROLES = {"combobox", "listbox", "button"}
+COLLAPSED_MENU_WAIT_S = 1.5
+COLLAPSED_MENU_POLL_S = 0.05
 
 
 def opens_collapsed_menu(action):
     return action["kind"] == "click" and action.get("expanded") in COLLAPSED and action.get("role") in MENU_ROLES
+
+
+def collapsed_menu_ready(page, baseline_n):
+    actions = page["actions"]
+    if any(a.get("role") == "option" for a in actions):
+        return True
+    # Ignore wait/scroll-only flashes; those are not an open menu.
+    return len(actions) != baseline_n and any(a["kind"] not in {"scroll", "wait"} for a in actions)
+
+
+def wait_collapsed_menu(observe, page):
+    baseline_n = len(page["actions"])
+    deadline = time.monotonic() + COLLAPSED_MENU_WAIT_S
+    while not collapsed_menu_ready(page, baseline_n) and time.monotonic() < deadline:
+        time.sleep(COLLAPSED_MENU_POLL_S)
+        page = observe()
+    return page
 
 
 def is_invalid_typesafe(error):
@@ -243,8 +262,7 @@ class Agent:
             )
             state["page"] = self._observe()
             if opens_collapsed_menu(action):
-                time.sleep(0.05)
-                state["page"] = self._observe()
+                state["page"] = wait_collapsed_menu(self._observe, state["page"])
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(
                 page_changed=state["page"]["fingerprint"] != page["fingerprint"],
