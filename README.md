@@ -57,15 +57,18 @@ git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast
 uv sync
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
+# Add TYPESAFE_API_KEY (TypeSafe is unchanged: api.typesafe.ai).
+uv run jev-ultrafast login   # Grok subscription OAuth for TYPE_TEXT
+# Optional: point Browser Harness at a Chrome DevTools port
+# export BU_CDP_URL=http://127.0.0.1:9242
 uv run jev
 ```
 
 Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
 
-Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
+Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted. For a dedicated debugging port, set `BU_CDP_URL=http://127.0.0.1:9242` (HTTP DevTools endpoint, not a WebSocket URL).
 
-`TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. The current demo uses `inception/mercury-2.5` with reasoning disabled. Gemini, GLM, and DeepSeek can also use the OpenAI-compatible text helper; configure the appropriate model, endpoint, and reasoning setting.
+`TYPE_TEXT` calls xAI chat completions at `https://api.x.ai/v1`. The default model is `grok-4.3` (current cheap/fast chat model on [xAI docs](https://docs.x.ai/developers/models); `grok-4-fast` is documented as an alias). Sign in with `jev-ultrafast login` (device-code OAuth + PKCE for a Grok subscription). Tokens are stored under `~/.config/jev-ultrafast/` and are gitignored. `TEXT_MODEL_API_KEY` remains a CI/dev fallback, not the recommended path. TypeSafe stays on `TYPESAFE_API_KEY`.
 
 ## Use the library
 

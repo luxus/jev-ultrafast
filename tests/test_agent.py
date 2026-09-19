@@ -153,7 +153,7 @@ def test_quoted_task_text_still_uses_the_llm(monkeypatch):
 
 def test_missing_text_credential_stops_before_guessing(monkeypatch):
     monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="TEXT_MODEL_API_KEY"):
+    with pytest.raises(ValueError, match="jev-ultrafast login"):
         model.field_text({"goal": 'Enter "Zurich"'})
 
 
